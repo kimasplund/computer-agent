@@ -20,12 +20,22 @@ class AnthropicClient:
         # Use config if provided, otherwise use environment variables
         self.config = config or API_CONFIG
         
+        # Development mode flags
+        self.use_mock_api = os.getenv("USE_MOCK_API", "false").lower() == "true"
+        if self.use_mock_api:
+            logger.warning("USING MOCK ANTHROPIC API FOR DEVELOPMENT/TESTING")
+        
         # Get API configuration values
         if config and hasattr(config, 'get'):
             # Using Config class which requires section and key
             self.api_key = config.get("api", "anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY")
             self.model = config.get("api", "anthropic_model") or "claude-3-5-sonnet-20241022"
             self.max_tokens = config.get("api", "anthropic_max_tokens") or 1024
+            
+            # Check for mock API mode in config
+            if not self.use_mock_api and config.get("api", "use_mock_api", False):
+                self.use_mock_api = True
+                logger.warning("USING MOCK ANTHROPIC API (from config) FOR DEVELOPMENT/TESTING")
             
             # Cache and optimization configuration
             self.cache_ttl = config.get('api', 'cache_ttl', 3600)
@@ -278,6 +288,10 @@ class AnthropicClient:
             The complete history is stored locally and can be accessed if needed.
         """
         try:
+            # Check if we should use mock API mode
+            if self.use_mock_api:
+                return self._generate_mock_response(run_history)
+                
             # Periodically clean expired cache entries
             self._clean_cache()
             
@@ -484,37 +498,82 @@ class AnthropicClient:
         self._apply_rate_limiting()
         
         try:
-            # Try to use the official API method
-            token_count = self.client.count_tokens(text)
-            
-            # Record successful API call
-            self._record_api_call()
-            
-            # Cache the result if caching is enabled
-            if self.enable_caching:
-                now = time.time()
-                self.token_count_cache[text_hash] = (token_count, now)
-                logger.debug(f"Cached token count ({token_count}) for text hash: {text_hash}")
+            # Use the appropriate token counting method based on library version
+            try:
+                # New method in Anthropic SDK
+                if hasattr(self.client, 'messages') and hasattr(self.client.messages, 'count_tokens'):
+                    # Create proper message content format for counting
+                    message_content = {"role": "user", "content": text}
+                    token_count = self.client.messages.count_tokens(
+                        messages=[message_content],
+                        model=self.model
+                    )
+                    token_count = token_count.usage.input_tokens if hasattr(token_count, 'usage') else token_count
+                elif hasattr(self.client.beta, 'messages') and hasattr(self.client.beta.messages, 'count_tokens'):
+                    # Try beta API with proper message format
+                    message_content = {"role": "user", "content": text}
+                    token_count = self.client.beta.messages.count_tokens(
+                        messages=[message_content],
+                        model=self.model
+                    )
+                    token_count = token_count.usage.input_tokens if hasattr(token_count, 'usage') else token_count
+                elif hasattr(self.client, 'count_tokens'):
+                    # Legacy method
+                    token_count = self.client.count_tokens(text)
+                else:
+                    raise ValueError("No valid token counting method found in Anthropic client")
                 
-            return token_count
-            
+                # Record successful API call
+                self._record_api_call()
+                
+                # Cache the result if caching is enabled
+                if self.enable_caching:
+                    now = time.time()
+                    self.token_count_cache[text_hash] = (token_count, now)
+                    logger.debug(f"Cached token count ({token_count}) for text hash: {text_hash}")
+                    
+                return token_count
+            except (AttributeError, TypeError) as api_err:
+                logger.warning(f"Token counting API method not found: {str(api_err)}")
+                raise ValueError("API token counting failed")
+                
         except Exception as e:
             logger.warning(f"Token counting API failed: {str(e)}")
+            
+            # Skip further API attempts if it's an authentication or credit issue
+            if "credit balance is too low" in str(e) or "authentication" in str(e).lower():
+                logger.warning("API access issue detected, using fallback methods directly")
             
             # Try different fallback methods with increasing sophistication
             try:
                 # Fallback 1: Use tiktoken if available (more accurate than simple word count)
                 import tiktoken
-                encoding = tiktoken.encoding_for_model(self.model.split('-')[0])
-                token_count = len(encoding.encode(text))
-                logger.info(f"Used tiktoken fallback for token counting: {token_count} tokens")
                 
-                # Cache this result too
-                if self.enable_caching:
-                    now = time.time()
-                    self.token_count_cache[text_hash] = (token_count, now)
+                # Try specific encodings known to work well with Claude
+                encoding = None
+                try:
+                    # For Claude, cl100k_base works well (same as GPT-4)
+                    encoding = tiktoken.get_encoding("cl100k_base")
+                except:
+                    try:
+                        # Fallback to p50k_base (GPT-3)
+                        encoding = tiktoken.get_encoding("p50k_base")
+                    except:
+                        # Last resort, try the most basic encoding
+                        encoding = tiktoken.get_encoding("gpt2")
+                
+                if encoding:
+                    token_count = len(encoding.encode(text))
+                    logger.info(f"Used tiktoken fallback for token counting with {encoding.name}: {token_count} tokens")
                     
-                return token_count
+                    # Cache this result too
+                    if self.enable_caching:
+                        now = time.time()
+                        self.token_count_cache[text_hash] = (token_count, now)
+                        
+                    return token_count
+                else:
+                    raise ValueError("Failed to get tiktoken encoding")
                 
             except ImportError:
                 logger.warning("Tiktoken not available for token counting fallback")
@@ -541,3 +600,115 @@ class AnthropicClient:
             
             logger.info(f"Used character-based fallback for token counting: {token_count} tokens")
             return token_count
+
+    def _generate_mock_response(self, run_history: List[Union[BetaMessage, Dict[str, Any]]]) -> BetaMessage:
+        """
+        Generate a mock response for development/testing when API is unavailable.
+        
+        Args:
+            run_history: List of conversation messages
+            
+        Returns:
+            BetaMessage: A simulated Claude response
+        """
+        logger.info("Generating mock response for development/testing")
+        
+        # Create a mock message ID
+        mock_id = f"msg_{int(time.time())}_{hash(str(run_history[-1]))}"
+        
+        # Extract the last user message to understand what they're asking for
+        last_user_message = None
+        for msg in reversed(run_history):
+            if isinstance(msg, dict) and msg.get('role') == 'user':
+                last_user_message = msg
+                break
+            elif hasattr(msg, 'role') and msg.role == 'user':
+                last_user_message = msg
+                break
+        
+        # Default mock action (finish_run) for when we don't recognize the command
+        mock_action = {
+            "name": "finish_run",
+            "input": {
+                "success": True,
+                "error": None
+            }
+        }
+        
+        # Simple keyword matching for common actions
+        user_content = ""
+        if last_user_message:
+            if isinstance(last_user_message, dict) and isinstance(last_user_message.get('content'), list):
+                for item in last_user_message['content']:
+                    if isinstance(item, dict) and item.get('type') == 'text':
+                        user_content += item.get('text', '')
+            elif isinstance(last_user_message, dict) and isinstance(last_user_message.get('content'), str):
+                user_content = last_user_message['content']
+            elif hasattr(last_user_message, 'content'):
+                for item in last_user_message.content:
+                    if hasattr(item, 'type') and item.type == 'text':
+                        user_content += item.text
+        
+        # Mock different responses based on user content
+        if any(term in user_content.lower() for term in ['screenshot', 'screen', 'capture']):
+            mock_action = {
+                "name": "computer",
+                "input": {
+                    "action_type": "screenshot",
+                    "grayscale": False,
+                    "bw_mode": False
+                }
+            }
+            mock_text = "I'll take a screenshot of the current screen."
+        elif any(term in user_content.lower() for term in ['click', 'press', 'select']):
+            # Mock a click action
+            mock_action = {
+                "name": "computer",
+                "input": {
+                    "action_type": "mouse_click",
+                    "x": 500,  # Center of screen typically
+                    "y": 400
+                }
+            }
+            mock_text = "I'll click at position (500, 400) on the screen."
+        elif any(term in user_content.lower() for term in ['type', 'write', 'input']):
+            # Mock a keyboard input action
+            mock_action = {
+                "name": "computer",
+                "input": {
+                    "action_type": "keyboard_type",
+                    "text": "Hello, this is a mock input"
+                }
+            }
+            mock_text = "I'll type the requested text."
+        else:
+            # Generic response when we don't understand
+            mock_text = "I understand your request, but I'm currently in development mode. This is a mock response."
+        
+        # Create a BetaMessage object for the response
+        # First prepare the content items
+        content = [
+            BetaTextBlock(
+                type="text",
+                text=mock_text
+            ),
+            BetaToolUseBlock(
+                type="tool_use",
+                id=f"tool_{int(time.time())}",
+                name=mock_action["name"],
+                input=mock_action["input"]
+            )
+        ]
+        
+        # Create the message
+        return BetaMessage(
+            id=mock_id,
+            type="message",
+            role="assistant",
+            model=self.model,
+            content=content,
+            usage={
+                "input_tokens": 0,
+                "output_tokens": 0
+            }
+        )

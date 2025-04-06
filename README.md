@@ -131,4 +131,42 @@ If you continue to experience issues with Wayland, try creating a `.env` file wi
 WAYLAND_ENABLED=false
 ```
 
+## Development and Testing
+
+### Mock API Mode
+
+For development and testing when you don't have Anthropic API credits, you can use the mock API mode:
+
+1. Add the following to your `.env` file:
+   ```
+   USE_MOCK_API=true
+   ```
+
+2. Alternatively, you can enable it in the configuration:
+   ```python
+   config.set("api", "use_mock_api", True)
+   ```
+
+When mock API mode is enabled, the system will generate simulated responses instead of calling the Anthropic API. This is useful for:
+
+- Testing UI and app behavior without API costs
+- Developing new features without API access
+- Testing the app in environments without internet access
+
+The mock responses are simplified but follow the same format as real API responses, simulating basic behaviors like:
+- Taking screenshots
+- Clicking on screen positions
+- Typing text
+- Completing tasks
+
+### Token Counting
+
+If you encounter token counting errors, you can install the `tiktoken` package for a reliable local fallback:
+
+```bash
+pip install tiktoken
+```
+
+This provides a local tokenizer that works with Claude models without requiring API calls.
+
 ---

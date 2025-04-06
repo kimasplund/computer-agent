@@ -442,77 +442,107 @@ class Store:
             Dict containing the action parameters
         """
         logger.debug(f"Extracting action from message: {message}")
-        if not isinstance(message, BetaMessage):
-            logger.error(f"Unexpected message type: {type(message)}")
-            return {'type': 'error', 'message': 'Unexpected message type'}
-        
-        for item in message.content:
-            if isinstance(item, BetaToolUseBlock):
-                tool_use = item
-                logger.debug(f"Found tool use: {tool_use}")
-                self.last_tool_use_id = tool_use.id
-                
-                if tool_use.name == 'finish_run':
-                    success = tool_use.input.get('success', True)
-                    error = tool_use.input.get('error', '')
-                    return {
-                        'type': 'finish',
-                        'success': success,
-                        'error': error
-                    }
-                
-                if tool_use.name != 'computer':
-                    logger.error(f"Unexpected tool: {tool_use.name}")
-                    return {'type': 'error', 'message': f"Unexpected tool: {tool_use.name}"}
-                
-                input_data = tool_use.input
-                action_type = input_data.get('action')
-                
-                # Start building the action dict
-                action = {'type': action_type}
-                
-                # Process all common screenshot optimization parameters
-                if 'grayscale' in input_data:
-                    action['grayscale'] = bool(input_data['grayscale'])
-                
-                if 'bw_mode' in input_data:
-                    action['bw_mode'] = bool(input_data['bw_mode'])
-                
-                if 'skip_before_screenshot' in input_data:
-                    action['skip_before_screenshot'] = bool(input_data['skip_before_screenshot'])
+        try:
+            if not isinstance(message, BetaMessage):
+                logger.error(f"Unexpected message type: {type(message)}")
+                return {'type': 'error', 'message': 'Unexpected message type'}
+            
+            for item in message.content:
+                if isinstance(item, BetaToolUseBlock):
+                    tool_use = item
+                    logger.debug(f"Found tool use: {tool_use}")
+                    self.last_tool_use_id = tool_use.id
                     
-                if 'skip_after_screenshot' in input_data:
-                    action['skip_after_screenshot'] = bool(input_data['skip_after_screenshot'])
-                
-                # Process region-related parameters
-                if 'region' in input_data and isinstance(input_data['region'], list) and len(input_data['region']) == 4:
-                    action['region'] = tuple(input_data['region'])
+                    if tool_use.name == 'finish_run':
+                        success = tool_use.input.get('success', True)
+                        error = tool_use.input.get('error', '')
+                        return {
+                            'type': 'finish',
+                            'success': success,
+                            'error': error
+                        }
                     
-                if 'element_type' in input_data:
-                    action['element_type'] = input_data['element_type']
-                
-                # Handle action-specific parameters
-                if action_type in ['mouse_move', 'left_click_drag']:
-                    if 'coordinate' not in input_data or len(input_data['coordinate']) != 2:
-                        logger.error(f"Invalid coordinate for mouse action: {input_data}")
-                        return {'type': 'error', 'message': 'Invalid coordinate for mouse action'}
-                    action['x'] = input_data['coordinate'][0]
-                    action['y'] = input_data['coordinate'][1]
-                    return action
-                elif action_type in ['left_click', 'right_click', 'middle_click', 'double_click', 'screenshot', 'cursor_position']:
-                    return action
-                elif action_type in ['type', 'key']:
-                    if 'text' not in input_data:
-                        logger.error(f"Missing text for keyboard action: {input_data}")
-                        return {'type': 'error', 'message': 'Missing text for keyboard action'}
-                    action['text'] = input_data['text']
-                    return action
-                else:
-                    logger.error(f"Unsupported action: {action_type}")
-                    return {'type': 'error', 'message': f"Unsupported action: {action_type}"}
-        
-        logger.error("No tool use found in message")
-        return {'type': 'error', 'message': 'No tool use found in message'}
+                    if tool_use.name != 'computer':
+                        logger.error(f"Unexpected tool: {tool_use.name}")
+                        return {'type': 'error', 'message': f"Unexpected tool: {tool_use.name}"}
+                    
+                    input_data = tool_use.input
+                    
+                    # Handle different formats for action_type
+                    # First check for action_type directly in input_data (mock API format)
+                    action_type = input_data.get('action_type')
+                    
+                    # If not found, try the standard 'action' field
+                    if action_type is None:
+                        action_type = input_data.get('action')
+                    
+                    # If still None, use a fallback
+                    if action_type is None:
+                        logger.error(f"Action type not found in input data: {input_data}")
+                        return {'type': 'error', 'message': 'Action type not found in input data'}
+                    
+                    # Start building the action dict
+                    action = {'type': action_type}
+                    
+                    # Process all common screenshot optimization parameters
+                    if 'grayscale' in input_data:
+                        action['grayscale'] = bool(input_data['grayscale'])
+                    
+                    if 'bw_mode' in input_data:
+                        action['bw_mode'] = bool(input_data['bw_mode'])
+                    
+                    if 'skip_before_screenshot' in input_data:
+                        action['skip_before_screenshot'] = bool(input_data['skip_before_screenshot'])
+                        
+                    if 'skip_after_screenshot' in input_data:
+                        action['skip_after_screenshot'] = bool(input_data['skip_after_screenshot'])
+                    
+                    # Process region-related parameters
+                    if 'region' in input_data and isinstance(input_data['region'], list) and len(input_data['region']) == 4:
+                        action['region'] = tuple(input_data['region'])
+                        
+                    if 'element_type' in input_data:
+                        action['element_type'] = input_data['element_type']
+                    
+                    # Handle action-specific parameters
+                    if action_type in ['mouse_move', 'left_click_drag']:
+                        # Check both coordinate format and direct x,y format
+                        if 'coordinate' in input_data and isinstance(input_data['coordinate'], list) and len(input_data['coordinate']) == 2:
+                            action['x'] = input_data['coordinate'][0]
+                            action['y'] = input_data['coordinate'][1]
+                        elif 'x' in input_data and 'y' in input_data:
+                            action['x'] = input_data['x']
+                            action['y'] = input_data['y']
+                        else:
+                            logger.error(f"Invalid coordinate for mouse action: {input_data}")
+                            return {'type': 'error', 'message': 'Invalid coordinate for mouse action'}
+                        return action
+                    elif action_type in ['left_click', 'right_click', 'middle_click', 'double_click', 'mouse_click']:
+                        # Include x,y coordinates if available
+                        if 'x' in input_data and 'y' in input_data:
+                            action['x'] = input_data['x']
+                            action['y'] = input_data['y']
+                        elif 'coordinate' in input_data and isinstance(input_data['coordinate'], list) and len(input_data['coordinate']) == 2:
+                            action['x'] = input_data['coordinate'][0]
+                            action['y'] = input_data['coordinate'][1]
+                        return action
+                    elif action_type in ['screenshot', 'cursor_position']:
+                        return action
+                    elif action_type in ['type', 'key', 'keyboard_type']:
+                        if 'text' not in input_data:
+                            logger.error(f"Missing text for keyboard action: {input_data}")
+                            return {'type': 'error', 'message': 'Missing text for keyboard action'}
+                        action['text'] = input_data['text']
+                        return action
+                    else:
+                        logger.error(f"Unsupported action: {action_type}")
+                        return {'type': 'error', 'message': f"Unsupported action: {action_type}"}
+            
+            logger.error("No tool use found in message")
+            return {'type': 'error', 'message': 'No tool use found in message'}
+        except Exception as e:
+            logger.error(f"Error extracting action: {e}")
+            return {'type': 'error', 'message': f"Error extracting action: {e}"}
 
     def display_assistant_message(self, message: BetaMessage, update_callback: Callable[[str], None]) -> None:
         """
@@ -522,36 +552,54 @@ class Store:
             message: The message to display
             update_callback: Callback function to update the UI
         """
-        if isinstance(message, BetaMessage):
-            for item in message.content:
-                if isinstance(item, BetaTextBlock):
-                    # Clean and format the text
-                    text = item.text.strip()
-                    if text:  # Only send non-empty messages
-                        update_callback(f"Assistant: {text}")
-                elif isinstance(item, BetaToolUseBlock):
-                    # Format tool use in a more readable way
-                    tool_name = item.name
-                    tool_input = item.input
-                    
-                    # Convert tool use to a more readable format
-                    if tool_name == 'computer':
-                        action = {
-                            'type': tool_input.get('action'),
-                            'x': tool_input.get('coordinate', [0, 0])[0] if 'coordinate' in tool_input else None,
-                            'y': tool_input.get('coordinate', [0, 0])[1] if 'coordinate' in tool_input else None,
-                            'text': tool_input.get('text')
-                        }
-                        update_callback(f"Performed action: {json.dumps(action)}")
-                    elif tool_name == 'finish_run':
-                        success = tool_input.get('success', True)
-                        if success:
-                            update_callback("Assistant: Task completed successfully!")
+        try:
+            if isinstance(message, BetaMessage):
+                for item in message.content:
+                    if isinstance(item, BetaTextBlock):
+                        # Clean and format the text
+                        text = item.text.strip()
+                        if text:  # Only send non-empty messages
+                            update_callback(f"Assistant: {text}")
+                    elif isinstance(item, BetaToolUseBlock):
+                        # Format tool use in a more readable way
+                        tool_name = item.name
+                        tool_input = item.input
+                        
+                        # Convert tool use to a more readable format
+                        if tool_name == 'computer':
+                            # Check for both action formats
+                            action_type = tool_input.get('action_type')
+                            if action_type is None:
+                                action_type = tool_input.get('action')
+                            
+                            # Build a standardized action dict for display
+                            action = {'type': action_type}
+                            
+                            # Handle coordinates
+                            if 'x' in tool_input and 'y' in tool_input:
+                                action['x'] = tool_input.get('x')
+                                action['y'] = tool_input.get('y')
+                            elif 'coordinate' in tool_input and isinstance(tool_input['coordinate'], list) and len(tool_input['coordinate']) == 2:
+                                action['x'] = tool_input['coordinate'][0]
+                                action['y'] = tool_input['coordinate'][1]
+                                
+                            # Handle text for keyboard actions
+                            if 'text' in tool_input:
+                                action['text'] = tool_input.get('text')
+                                
+                            update_callback(f"Action: {json.dumps(action)}")
+                        elif tool_name == 'finish_run':
+                            success = tool_input.get('success', True)
+                            if success:
+                                update_callback("Assistant: Task completed successfully!")
+                            else:
+                                error = tool_input.get('error', 'Unknown error')
+                                update_callback(f"Assistant: Task could not be completed: {error}")
                         else:
-                            error = tool_input.get('error', 'Unknown error')
-                            update_callback(f"Assistant: Task could not be completed: {error}")
-                    else:
-                        update_callback(f"Assistant action: {tool_name} - {json.dumps(tool_input)}")
+                            update_callback(f"Assistant action: {tool_name} - {json.dumps(tool_input)}")
+        except Exception as e:
+            logger.error(f"Error displaying assistant message: {e}")
+            update_callback(f"Error displaying message: {str(e)}")
 
     def cleanup(self) -> None:
         """Clean up resources"""

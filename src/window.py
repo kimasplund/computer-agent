@@ -779,10 +779,12 @@ class MainWindow(QMainWindow):
         
         
     def update_log(self, message):
-        if message.startswith("Performed action:"):
-            action_text = message.replace("Performed action:", "").strip()
+        """Update the action log with a new message."""
+        # Check if it's an action
+        if message.startswith("Action:"):
+            action_text = message.replace("Action:", "").strip()
             
-            # Pill-shaped button style with green text
+            # Style for action buttons
             button_style = '''
                 <div style="margin: 6px 0;">
                     <span style="
@@ -792,7 +794,7 @@ class MainWindow(QMainWindow):
                         border: 1px solid rgba(255, 255, 255, 0.1);
                         border-radius: 100px;
                         padding: 4px 12px;
-                        color: #4CAF50;
+                        color: #e0e0e0;
                         font-family: Inter, -apple-system, system-ui, sans-serif;
                         font-size: 13px;
                         line-height: 1.4;
@@ -803,8 +805,23 @@ class MainWindow(QMainWindow):
             
             try:
                 import json
-                action_data = json.loads(action_text)
-                action_type = action_data.get('type', '').lower()
+                try:
+                    action_data = json.loads(action_text)
+                except json.JSONDecodeError:
+                    self.action_log.append(button_style.format(f"Invalid action format: {action_text}"))
+                    return
+                    
+                # Handle None action_data
+                if action_data is None:
+                    self.action_log.append(button_style.format("Empty action data"))
+                    return
+                
+                # Safely get the action type, defaulting to empty string if None
+                action_type = action_data.get('type', '')
+                if action_type is None:
+                    action_type = ''
+                else:
+                    action_type = action_type.lower()
                 
                 if action_type == "type":
                     text = action_data.get('text', '')
