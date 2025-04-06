@@ -149,11 +149,18 @@ For development and testing when you don't have Anthropic API credits, you can u
    config.set("api", "use_mock_api", True)
    ```
 
+3. You can also set it to automatically fall back to mock mode if the API fails:
+   ```
+   FALLBACK_TO_MOCK_ON_ERROR=true
+   ```
+
 When mock API mode is enabled, the system will generate simulated responses instead of calling the Anthropic API. This is useful for:
 
 - Testing UI and app behavior without API costs
 - Developing new features without API access
 - Testing the app in environments without internet access
+- Continuing to use the app when you run out of API credits
+- Handling API outages gracefully
 
 The mock responses are simplified but follow the same format as real API responses, simulating basic behaviors like:
 - Taking screenshots

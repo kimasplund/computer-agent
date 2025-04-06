@@ -11,26 +11,79 @@ from .anthropic import AnthropicClient
 from .computer import ComputerControl
 from .exceptions import AnthropicError, ComputerAgentError, StorageError
 from anthropic.types.beta import BetaMessage, BetaToolUseBlock, BetaTextBlock
-from .config import DATA_DIR
+from .config import DATA_DIR, CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
 class Store:
-    def __init__(self, config=None):
+    def __init__(self, config=None, computer_control=None, anthropic_client=None):
         """
-        Initialize the application store with Anthropic client and Computer control
+        Initialize the store with configuration.
         
         Args:
-            config: Optional configuration object
+            config: Configuration object
+            computer_control: Pre-initialized ComputerControl object
+            anthropic_client: Pre-initialized AnthropicClient object
         """
-        self.instructions = ""
-        self.fully_auto = True
+        self.config = config
+        
+        # Generate a unique session ID for this run
+        self.session_id = str(int(time.time()))
+        
+        # Initialize the run flag
         self.running = False
-        self.error = None
+        
+        # Initialize history
         self.run_history: List[Union[BetaMessage, Dict[str, Any]]] = []
+        
+        # Build paths
+        if config:
+            self.data_dir = Path(config.get("storage", "data_dir", DATA_DIR))
+        else:
+            self.data_dir = DATA_DIR
+            
+        # Create data directory if it doesn't exist
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        # Set up history storage paths
+        self.history_dir = self.data_dir / "history"
+        os.makedirs(self.history_dir, exist_ok=True)
+        
+        # Create a unique filename for this session
+        now = datetime.datetime.now()
+        date_part = now.strftime("%Y%m%d")
+        self.history_file = self.history_dir / f"session_{date_part}_{self.session_id}.pkl"
+        
+        # Create or load the history index
+        self.history_index_file = self.history_dir / "index.json"
+        self.history_index = {}
+        
+        if os.path.exists(self.history_index_file):
+            try:
+                with open(self.history_index_file, 'r') as f:
+                    self.history_index = json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading history index: {str(e)}")
+                # Create a new index if loading fails
+                self.history_index = {}
+        
+        # Initialize components
+        try:
+            # Use provided computer_control or create a new one
+            self.computer_control = computer_control or ComputerControl(config)
+            # Use provided anthropic_client or create a new one
+            self.anthropic_client = anthropic_client or AnthropicClient(config)
+        except Exception as e:
+            logger.error(f"Error initializing components: {str(e)}")
+            raise
+            
+        # Initial instructions
+        self.instructions = ""
+        
+        self.fully_auto = True
+        self.error = None
         self.last_tool_use_id = None
         self.last_action = None  # Track the last action for better region selection
-        self.config = config
         
         # Session identifier for log files
         self.session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -43,18 +96,6 @@ class Store:
         
         # Create index for retrieving historical messages
         self.history_index: Dict[str, Dict[str, Any]] = {}
-        
-        try:
-            self.anthropic_client = AnthropicClient(config)
-        except ValueError as e:
-            self.error = str(e)
-            logger.error(f"AnthropicClient initialization error: {self.error}")
-        
-        try:
-            self.computer_control = ComputerControl(config)
-        except Exception as e:
-            self.error = str(e)
-            logger.error(f"ComputerControl initialization error: {self.error}")
         
     def set_instructions(self, instructions: str) -> None:
         """Set the instructions for the agent run"""
@@ -319,12 +360,14 @@ class Store:
                             metadata['coordinates'] = [action['x'], action['y']]
                             
                         # Add region info if specified
-                        if region:
-                            metadata['region'] = region
+                        if 'region' in action:
+                            metadata['region'] = action['region']
                             
                         # Add image processing info
-                        metadata['grayscale'] = bool(use_grayscale) if 'use_grayscale' in locals() else False
-                        metadata['bw_mode'] = bool(use_bw_mode) if 'use_bw_mode' in locals() else False
+                        use_grayscale = action.get('grayscale', False)
+                        use_bw_mode = action.get('bw_mode', False)
+                        metadata['grayscale'] = use_grayscale
+                        metadata['bw_mode'] = use_bw_mode
                         
                         # Create message with screenshot
                         screenshot_message = {

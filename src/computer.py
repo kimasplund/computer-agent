@@ -224,33 +224,45 @@ class ComputerControl:
             logger.warning(f"Potentially unsafe action blocked: {action}")
             return self._generate_error_image()
             
-        action_type = action['type']
-        # Determine if we should skip the "before" screenshot to save bandwidth
+        # Ensure we have a valid action type
+        action_type = action.get('type', 'unknown')
+        if action_type == 'unknown':
+            logger.error("Action with missing or invalid type")
+            return self._generate_error_image()
+            
+        # Initialize parameters with defaults
         skip_before_screenshot = action.get('skip_before_screenshot', False)
-        # Determine if we should use grayscale to save bandwidth
         use_grayscale = action.get('grayscale', False)
-        # Determine if we should use black and white (1-bit) mode for text-focused screenshots
         use_bw_mode = action.get('bw_mode', False)
-        # Get region if specified for targeted screenshots
         region = action.get('region', None)
         
         # If region of interest type is specified, calculate the region
-        if not region and action.get('element_type'):
-            region = self.get_region_of_interest(
-                element_type=action.get('element_type'),
-                last_action=action.get('last_action')
-            )
-            
-            # Auto-enable black and white mode for text-based elements like address bars
-            if not use_grayscale and not use_bw_mode and action.get('element_type') in ['browser_address', 'text_field']:
-                use_bw_mode = True
+        try:
+            if not region and action.get('element_type'):
+                region = self.get_region_of_interest(
+                    element_type=action.get('element_type'),
+                    last_action=action.get('last_action')
+                )
+                
+                # Auto-enable black and white mode for text-based elements like address bars
+                if not use_grayscale and not use_bw_mode and action.get('element_type') in ['browser_address', 'text_field']:
+                    use_bw_mode = True
+        except Exception as e:
+            logger.error(f"Error calculating region of interest: {str(e)}")
+            region = None  # Fallback to full screen
         
         # Take a screenshot before the action (unless skipped)
-        before_screenshot = None if skip_before_screenshot else self.take_screenshot(
-            region=region, 
-            grayscale=use_grayscale,
-            bw_mode=use_bw_mode
-        )
+        before_screenshot = None
+        if not skip_before_screenshot:
+            try:
+                before_screenshot = self.take_screenshot(
+                    region=region, 
+                    grayscale=use_grayscale,
+                    bw_mode=use_bw_mode
+                )
+            except Exception as e:
+                logger.error(f"Error taking before screenshot: {str(e)}")
+                before_screenshot = self._generate_error_image()
         
         # Log the action being performed
         logger.info(f"Performing action: {action_type}")

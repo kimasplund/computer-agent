@@ -1,14 +1,17 @@
 import json
 import os
 from pathlib import Path
+import logging
+from .config import DEFAULT_SYSTEM_PROMPT
 
-DEFAULT_SYSTEM_PROMPT = """The user will ask you to perform a task and you should use their computer to do so. After each step, take a screenshot and carefully evaluate if you have achieved the right outcome. Explicitly show your thinking: 'I have evaluated step X...' If not correct, try again. Only when you confirm a step was executed correctly should you move on to the next one. Note that you have to click into the browser address bar before typing a URL. You should always call a tool! Always return a tool call. Remember call the finish_run tool when you have achieved the goal of the task. Do not explain you have finished the task, just call the tool. Use keyboard shortcuts to navigate whenever possible. Please remember to take a screenshot after EVERY step to confirm you have achieved the right outcome."""
+logger = logging.getLogger(__name__)
 
 class PromptManager:
     def __init__(self):
         self.config_dir = Path.home() / ".grunty"
         self.config_file = self.config_dir / "prompts.json"
         self.current_prompt = self.load_prompt()
+        self.display_info = {}  # Store display information here
 
     def load_prompt(self) -> str:
         """Load the system prompt from the config file or return the default"""
@@ -24,7 +27,7 @@ class PromptManager:
                 data = json.load(f)
                 return data.get('system_prompt', DEFAULT_SYSTEM_PROMPT)
         except Exception as e:
-            print(f"Error loading prompt: {e}")
+            logger.error(f"Error loading prompt: {e}")
             return DEFAULT_SYSTEM_PROMPT
 
     def save_prompt(self, prompt: str) -> bool:
@@ -35,7 +38,7 @@ class PromptManager:
             self.current_prompt = prompt
             return True
         except Exception as e:
-            print(f"Error saving prompt: {e}")
+            logger.error(f"Error saving prompt: {e}")
             return False
 
     def reset_to_default(self) -> bool:
@@ -43,5 +46,37 @@ class PromptManager:
         return self.save_prompt(DEFAULT_SYSTEM_PROMPT)
 
     def get_current_prompt(self) -> str:
-        """Get the current system prompt"""
-        return self.current_prompt
+        """Get the current system prompt with display information populated"""
+        if not self.display_info:
+            return self.current_prompt
+            
+        # Format the prompt with display information if available
+        try:
+            return self.current_prompt.format(**self.display_info)
+        except KeyError as e:
+            logger.warning(f"Missing display info key in prompt template: {e}")
+            return self.current_prompt
+        except Exception as e:
+            logger.error(f"Error formatting prompt with display info: {e}")
+            return self.current_prompt
+            
+    def set_display_info(self, display_info: dict) -> None:
+        """Set display information to be included in the system prompt
+        
+        Args:
+            display_info: Dictionary with display information such as:
+                - screen_width: Width of the primary screen
+                - screen_height: Height of the primary screen
+                - is_wayland: Whether Wayland is being used
+                - screen_count: Number of screens detected
+                - screens: List of screen details
+        """
+        self.display_info = display_info
+        logger.info(f"Display information set in prompt manager: {display_info}")
+        
+    def update_prompt_template(self, new_template: str) -> bool:
+        """Update the prompt template while preserving display info"""
+        old_display_info = self.display_info
+        result = self.save_prompt(new_template)
+        self.display_info = old_display_info
+        return result

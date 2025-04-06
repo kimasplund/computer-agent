@@ -77,3 +77,5 @@ coverage.xml
 .pytest_cache/
 cover/
 .mcp/
+CLAUDE.md
+improvement_plan.md

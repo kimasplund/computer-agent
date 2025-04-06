@@ -87,7 +87,13 @@ COMPUTER_CONFIG = {
 }
 
 # Default system prompt
-DEFAULT_SYSTEM_PROMPT = """The user will ask you to perform a task and you should use their computer to do so. After each step, take a screenshot and carefully evaluate if you have achieved the right outcome. Explicitly show your thinking: 'I have evaluated step X...' If not correct, try again. Only when you confirm a step was executed correctly should you move on to the next one. 
+DEFAULT_SYSTEM_PROMPT = """The user will ask you to perform a task and you should use their computer to do so. After each step, take a screenshot and carefully evaluate if you have achieved the right outcome. Explicitly show your thinking: 'I have evaluated step X...' If not correct, try again. Only when you confirm a step was executed correctly should you move on to the next one.
+
+Your screen environment:
+- Main screen resolution: {screen_width}x{screen_height}
+- Wayland environment: {is_wayland}
+- Number of screens: {screen_count}
+{screens_info}
 
 Important screenshot capabilities:
 1. You can take focused screenshots of specific regions by specifying 'element_type' in your action:

@@ -10,11 +10,14 @@ import logging
 from .prompt_manager import PromptManager
 from .exceptions import AnthropicError
 from .config import API_CONFIG
+import random
+import json
+import uuid
 
 logger = logging.getLogger(__name__)
 
 class AnthropicClient:
-    def __init__(self, config=None):
+    def __init__(self, config=None, prompt_manager=None):
         load_dotenv()  # Load environment variables from .env file
         
         # Use config if provided, otherwise use environment variables
@@ -78,11 +81,60 @@ class AnthropicClient:
                 api_key=self.api_key,
                 timeout=60.0,  # 60 second timeout for API calls
             )
-            self.prompt_manager = PromptManager()
+            # Use provided prompt manager or create a new one
+            self.prompt_manager = prompt_manager or PromptManager()
             logger.info(f"Anthropic client initialized with model: {self.model}")
         except Exception as e:
             logger.error(f"Failed to initialize Anthropic client: {str(e)}")
             raise ValueError(f"Failed to initialize Anthropic client: {str(e)}")
+            
+    def _get_computer_tool_definition(self):
+        """
+        Get the computer tool definition with the correct screen dimensions from display_info
+        """
+        # Default values in case display_info isn't available
+        display_width = 1280
+        display_height = 800
+        display_number = 1
+        
+        # Use display_info from prompt_manager if available
+        if hasattr(self, 'prompt_manager') and hasattr(self.prompt_manager, 'display_info'):
+            display_info = self.prompt_manager.display_info
+            if display_info:
+                # Extract screen dimensions from display_info
+                display_width = display_info.get('screen_width', display_width)
+                display_height = display_info.get('screen_height', display_height)
+                display_number = display_info.get('screen_count', display_number)
+                
+                logger.info(f"Using dynamic screen dimensions: {display_width}x{display_height} with {display_number} displays")
+        
+        return [
+            {
+                "type": "computer_20241022",
+                "name": "computer",
+                "display_width_px": display_width,
+                "display_height_px": display_height,
+                "display_number": display_number,
+            },
+            {
+                "name": "finish_run",
+                "description": "Call this function when you have achieved the goal of the task.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "success": {
+                            "type": "boolean",
+                            "description": "Whether the task was successful"
+                        },
+                        "error": {
+                            "type": "string",
+                            "description": "The error message if the task was not successful"
+                        }
+                    },
+                    "required": ["success"]
+                }
+            }
+        ]
             
     def _apply_rate_limiting(self) -> None:
         """
@@ -112,60 +164,87 @@ class AnthropicClient:
     
     def _clean_message_history(self, run_history: List[Union[BetaMessage, Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
-        Convert message history to dictionary format expected by the API
-        Optionally truncates history to reduce token usage
+        Convert message history to dictionary format expected by the API.
+        Ensures proper pairing of tool_use and tool_result blocks to avoid API errors.
         """
         cleaned_history = []
+        tool_use_ids = set()  # Track tool_use IDs that need tool_result blocks
+        
+        # First pass: convert messages and track tool_use IDs
         for message in run_history:
             if isinstance(message, BetaMessage):
-                # Preserve message ID if present
                 msg_dict = {
                     "role": message.role,
                     "content": message.content
                 }
-                if hasattr(message, 'id'):
-                    msg_dict['id'] = message.id
                 cleaned_history.append(msg_dict)
+                
+                # Track tool_use IDs to ensure proper pairing
+                if message.role == "assistant":
+                    for block in message.content:
+                        if hasattr(block, 'type') and block.type == 'tool_use' and hasattr(block, 'id'):
+                            tool_use_ids.add(block.id)
             elif isinstance(message, dict) and "role" in message and "content" in message:
-                cleaned_history.append(message)
+                # Create a new dict without the 'id' field if present
+                msg_dict = {
+                    "role": message["role"],
+                    "content": message["content"]
+                }
+                cleaned_history.append(msg_dict)
+                
+                # Track tool_use IDs to ensure proper pairing
+                if message["role"] == "assistant" and isinstance(message["content"], list):
+                    for block in message["content"]:
+                        if isinstance(block, dict) and block.get("type") == "tool_use" and "id" in block:
+                            tool_use_ids.add(block["id"])
             else:
                 raise ValueError(f"Unexpected message type: {type(message)}")
-                
-        # Only keep essential history if it's getting long and truncation is enabled
-        if self.truncate_history and len(cleaned_history) > self.history_truncation_threshold:
-            # Keep the first user message (task instruction)
-            start_messages = [cleaned_history[0]] if cleaned_history else []
+        
+        # Second pass: analyze to ensure each tool_use has a matching tool_result
+        # This is critical to avoid the API error about missing tool_result blocks
+        result_blocks_by_tool_id = {}
+        
+        # Find all tool_result blocks
+        for msg in cleaned_history:
+            if msg["role"] == "user" and isinstance(msg["content"], list):
+                for block in msg["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result" and "tool_use_id" in block:
+                        result_blocks_by_tool_id[block["tool_use_id"]] = True
+        
+        # Check if any tool_use blocks don't have corresponding tool_result blocks
+        missing_result_ids = tool_use_ids - set(result_blocks_by_tool_id.keys())
+        
+        if missing_result_ids:
+            logger.warning(f"Found {len(missing_result_ids)} tool_use blocks without matching tool_result blocks")
+            logger.warning(f"Will filter out problematic messages to avoid API errors")
             
-            # Calculate how many recent messages to keep (75% of threshold)
-            recent_count = max(int(self.history_truncation_threshold * 0.75), 3)
+            # Get indexes of messages with problematic tool_use blocks
+            problem_indexes = []
+            for i, msg in enumerate(cleaned_history):
+                if msg["role"] == "assistant" and isinstance(msg["content"], list):
+                    has_problem = False
+                    for block in msg["content"]:
+                        if isinstance(block, dict) and block.get("type") == "tool_use" and "id" in block:
+                            if block["id"] in missing_result_ids:
+                                has_problem = True
+                                break
+                    if has_problem:
+                        problem_indexes.append(i)
             
-            # And the most recent N messages
-            recent_messages = cleaned_history[-recent_count:] if len(cleaned_history) >= recent_count else cleaned_history
-            
-            # Collect IDs of truncated messages for later reference
-            truncated_ids = []
-            for msg in cleaned_history[1:-recent_count]:
-                if isinstance(msg, dict) and 'id' in msg:
-                    truncated_ids.append(msg['id'])
-            
-            # Create a concise summary of the truncated messages to maintain context
-            summary = self._create_truncated_message_summary(cleaned_history[1:-recent_count])
-            
-            # Add a marker to indicate truncation, with reference IDs and summary
-            truncation_marker = [{
+            # If we found problematic messages, remove them and their missing tool_result pairs
+            if problem_indexes:
+                logger.warning(f"Removing {len(problem_indexes)} problematic messages to avoid API errors")
+                # Create a new history without the problematic messages
+                cleaned_history = [msg for i, msg in enumerate(cleaned_history) if i not in problem_indexes]
+        
+        # Ensure we have at least one message in history
+        if not cleaned_history:
+            # Create a basic system prompt
+            cleaned_history.append({
                 "role": "system", 
-                "content": [{"type": "text", "text": f"Some conversation history ({len(cleaned_history) - 1 - len(recent_messages)} messages) has been summarized for brevity: {summary} If needed, complete messages can be retrieved from local storage."}]
-            }]
-            
-            if truncated_ids:
-                # Log truncated message IDs for potential retrieval
-                logger.debug(f"Truncated message IDs: {truncated_ids}")
-            
-            logger.info(f"Truncated conversation history from {len(cleaned_history)} to {1 + 1 + len(recent_messages)} messages")
-            
-            # Combine relevant portions
-            return start_messages + truncation_marker + recent_messages
-            
+                "content": "You are Claude, an AI assistant that can control computer devices. Help the user with their requests."
+            })
+        
         return cleaned_history
         
     def _create_truncated_message_summary(self, messages: List[Dict[str, Any]]) -> str:
@@ -287,193 +366,154 @@ class AnthropicClient:
             If history truncation is enabled, only a subset of the full history will be sent to the API.
             The complete history is stored locally and can be accessed if needed.
         """
+        # Check if mock API is enabled (highest priority)
+        if self.use_mock_api:
+            logger.info("Using mock API instead of calling Anthropic API")
+            return self._generate_mock_response(run_history)
+        
         try:
-            # Check if we should use mock API mode
-            if self.use_mock_api:
-                return self._generate_mock_response(run_history)
-                
-            # Periodically clean expired cache entries
-            self._clean_cache()
+            # Validate input
+            if not run_history:
+                raise ValueError("Empty run history provided")
             
-            # Convert message history to the format expected by the API
+            # Clean and prepare history for API call
             cleaned_history = self._clean_message_history(run_history)
             
-            # Check cache for identical conversation, if caching is enabled
-            if self.enable_caching:
-                # For caching purposes, we only include essential parts of the message
-                # to avoid ID fields affecting the hash
-                cache_history = []
-                for msg in cleaned_history:
-                    cache_msg = {
-                        'role': msg['role'],
-                        'content': msg['content']
-                    }
-                    cache_history.append(cache_msg)
-                
-                # Compute a hash of the entire conversation context
-                conversation_hash = self._compute_hash([
-                    cache_history,
-                    self.prompt_manager.get_current_prompt(),
-                    self.model,
-                    self.max_tokens
-                ])
-                
-                # Check if we have a cached response for this exact conversation
-                if conversation_hash in self.message_hash_cache:
-                    response_hash, _ = self.message_hash_cache[conversation_hash]
-                    if response_hash in self.response_cache:
-                        cached_response, _ = self.response_cache[response_hash]
-                        logger.info("Using cached response for identical conversation")
-                        return cached_response
+            # Compute a hash of the conversation for cache lookup
+            conversation_hash = self._compute_hash(cleaned_history)
             
-            # Define tools
-            tools = [
-                {
-                    "type": "computer_20241022",
-                    "name": "computer",
-                    "display_width_px": 1280,
-                    "display_height_px": 800,
-                    "display_number": 1,
-                },
-                {
-                    "name": "finish_run",
-                    "description": "Call this function when you have achieved the goal of the task.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "success": {
-                                "type": "boolean",
-                                "description": "Whether the task was successful"
-                            },
-                            "error": {
-                                "type": "string",
-                                "description": "The error message if the task was not successful"
-                            }
-                        },
-                        "required": ["success"]
-                    }
-                }
-            ]
+            # Check cache if enabled
+            if self.enable_caching and conversation_hash in self.message_hash_cache:
+                # Get the cached response hash
+                response_hash, timestamp = self.message_hash_cache[conversation_hash]
+                
+                # Check if the cache entry is still valid
+                now = time.time()
+                if now - timestamp <= self.cache_ttl and response_hash in self.response_cache:
+                    # Get the cached response
+                    response, _ = self.response_cache[response_hash]
+                    logger.info(f"Using cached response for conversation (hash: {conversation_hash})")
+                    return response
             
-            # Get system prompt from prompt manager
+            # Apply rate limiting for API calls
+            self._apply_rate_limiting()
+            
+            # Make API call with retries for transient errors
+            max_retries = 3
+            retry_delay = 1.0  # Initial delay in seconds
+            error_msg = None
+            status_code = None
+            
+            # Get the system prompt from prompt manager with display info
             system_prompt = self.prompt_manager.get_current_prompt()
-            
-            # Make API request with enhanced retries for transient errors
-            max_retries = 5  # Increased from 3 for better resilience
-            base_delay = 2.0  # Base delay in seconds
-            max_delay = 30.0  # Maximum delay in seconds
-            jitter_factor = 0.25  # Random jitter factor to avoid thundering herd
+            logger.debug(f"Using system prompt with display info: {system_prompt[:100]}...")
             
             for attempt in range(max_retries):
                 try:
-                    # Check if we should apply rate limiting
-                    self._apply_rate_limiting()
-                    
-                    # Log the attempt
-                    if attempt > 0:
-                        logger.info(f"API request attempt {attempt+1}/{max_retries}")
-                    
                     # Make the API call
+                    logger.debug(f"Sending request to Anthropic API (attempt {attempt+1}/{max_retries})")
+                    
                     response = self.client.beta.messages.create(
                         model=self.model,
                         max_tokens=self.max_tokens,
-                        tools=tools,
-                        messages=cast(List[MessageParam], cleaned_history),
-                        system=system_prompt,
+                        messages=cleaned_history,
+                        tools=self._get_computer_tool_definition(),
+                        system=system_prompt,  # Use the system prompt with display info
                         betas=["computer-use-2024-10-22"],
                     )
                     
-                    # Record successful call for rate limiting
+                    # Record successful API call
                     self._record_api_call()
-                    break
                     
-                except anthropic.RateLimitError as e:
-                    # Calculate backoff with exponential increase and jitter
-                    delay = min(max_delay, base_delay * (2 ** attempt))
-                    # Add jitter to avoid thundering herd problem
-                    jitter = delay * jitter_factor * (2 * (0.5 - time.time() % 1))
-                    wait_time = delay + jitter
+                    # Check if there's at least one tool use block
+                    has_tool_use = False
+                    for content in response.content:
+                        if isinstance(content, BetaToolUseBlock):
+                            has_tool_use = True
+                            break
                     
-                    if attempt < max_retries - 1:
-                        logger.warning(f"Rate limit hit, retrying in {wait_time:.2f}s... (attempt {attempt+1}/{max_retries})")
-                        time.sleep(wait_time)
-                    else:
-                        logger.error(f"Rate limit exceeded after {max_retries} attempts")
-                        raise AnthropicError(f"Rate limit exceeded: {str(e)}", "rate_limit", 429)
+                    if not has_tool_use:
+                        text_content = next((content.text for content in response.content if isinstance(content, BetaTextBlock)), "")
+                        # Create a synthetic tool use block for finish_run
+                        response.content.append(BetaToolUseBlock(
+                            id="synthetic_finish",
+                            type="tool_use",
+                            name="finish_run",
+                            input={
+                                "success": False,
+                                "error": f"Claude needs more information: {text_content}"
+                            }
+                        ))
+                        logger.info(f"Added synthetic finish_run for text-only response: {text_content}")
+                    
+                    # Store response in cache if caching is enabled
+                    if self.enable_caching:
+                        # Compute a hash for the response
+                        response_hash = self._compute_hash(response)
                         
-                except anthropic.APITimeoutError:
-                    # Calculate backoff with exponential increase and jitter
-                    delay = min(max_delay, base_delay * (2 ** attempt))
-                    jitter = delay * jitter_factor * (2 * (0.5 - time.time() % 1))
-                    wait_time = delay + jitter
-                    
-                    if attempt < max_retries - 1:
-                        logger.warning(f"API timeout, retrying in {wait_time:.2f}s... (attempt {attempt+1}/{max_retries})")
-                        time.sleep(wait_time)
-                    else:
-                        logger.error(f"API request timed out after {max_retries} attempts")
-                        raise AnthropicError("API request timed out after multiple attempts", "timeout", 504)
+                        # Store the response in the cache
+                        now = time.time()
+                        self.response_cache[response_hash] = (response, now)
                         
-                except anthropic.APIStatusError as e:
-                    # Handle specific status codes
-                    status_code = getattr(e, "status_code", 0)
-                    
-                    # 429 is rate limiting, 500s are server errors - both are retryable
-                    if status_code == 429 or (status_code >= 500 and status_code < 600):
-                        delay = min(max_delay, base_delay * (2 ** attempt))
-                        jitter = delay * jitter_factor * (2 * (0.5 - time.time() % 1))
-                        wait_time = delay + jitter
+                        # Map the conversation hash to the response hash
+                        self.message_hash_cache[conversation_hash] = (response_hash, now)
                         
-                        if attempt < max_retries - 1:
-                            logger.warning(f"API error {status_code}, retrying in {wait_time:.2f}s... (attempt {attempt+1}/{max_retries})")
-                            time.sleep(wait_time)
-                        else:
-                            logger.error(f"API error {status_code} persisted after {max_retries} attempts")
-                            raise AnthropicError(f"API error: {str(e)}", getattr(e, "error_code", None), status_code)
+                        logger.debug(f"Cached response (hash: {response_hash}) for conversation (hash: {conversation_hash})")
+
+                    return response
+                    
+                except anthropic.APIError as e:
+                    error_msg = f"API Error: Anthropic API Error: API error: {str(e)}"
+                    logger.error(error_msg)
+                    status_code = getattr(e, "status_code", None)
+                    
+                    # Check if error is retryable
+                    if hasattr(e, "status_code") and e.status_code in (429, 500, 502, 503, 504):
+                        # Retryable error - use exponential backoff
+                        retry_delay *= (2 + random.random())  # Add jitter
+                        logger.warning(f"Retryable API error: {str(e)}. Retrying in {retry_delay:.2f}s")
+                        time.sleep(retry_delay)
+                        continue
                     else:
                         # Non-retryable error
                         logger.error(f"Non-retryable API error: {status_code} - {str(e)}")
-                        raise AnthropicError(f"API error: {str(e)}", getattr(e, "error_code", None), status_code)
-            
-            # Handle the case where Claude responds with just text (no tool use)
-            has_tool_use = any(isinstance(content, BetaToolUseBlock) for content in response.content)
-            if not has_tool_use:
-                text_content = next((content.text for content in response.content if isinstance(content, BetaTextBlock)), "")
-                # Create a synthetic tool use block for finish_run
-                response.content.append(BetaToolUseBlock(
-                    id="synthetic_finish",
-                    type="tool_use",
-                    name="finish_run",
-                    input={
-                        "success": False,
-                        "error": f"Claude needs more information: {text_content}"
-                    }
-                ))
-                logger.info(f"Added synthetic finish_run for text-only response: {text_content}")
-            
-            # Store response in cache if caching is enabled
-            if self.enable_caching:
-                # Compute a hash for the response
-                response_hash = self._compute_hash(response)
+                        break
                 
-                # Store the response in the cache
-                now = time.time()
-                self.response_cache[response_hash] = (response, now)
-                
-                # Map the conversation hash to the response hash
-                self.message_hash_cache[conversation_hash] = (response_hash, now)
-                
-                logger.debug(f"Cached response (hash: {response_hash}) for conversation (hash: {conversation_hash})")
-
-            return response
+                except Exception as e:
+                    error_msg = f"Unexpected error: {str(e)}"
+                    logger.error(error_msg)
+                    break
             
-        except anthropic.APIError as e:
-            error_message = f"API Error: {str(e)}"
+            # If we get here, all retries failed or we had a non-retryable error
+            if self.use_mock_api or os.getenv("USE_MOCK_API", "").lower() == "true":
+                # Fallback to mock API if API call fails and mock is allowed
+                logger.warning("API call failed, falling back to mock API mode")
+                return self._generate_mock_response(run_history)
+            
+            # Otherwise raise the error
+            raise AnthropicError(f"API error: {str(error_msg)}", None, status_code)
+            
+        except AnthropicError as e:
+            # Re-raise Anthropic errors
+            error_message = f"Anthropic API Error: {str(e)}"
             logger.error(error_message)
-            raise AnthropicError(error_message, getattr(e, "error_code", None), getattr(e, "status_code", None))
+            
+            # If mock API is allowed as fallback, use it
+            if os.getenv("FALLBACK_TO_MOCK_ON_ERROR", "").lower() == "true":
+                logger.warning("API error occurred, falling back to mock API")
+                return self._generate_mock_response(run_history)
+            
+            raise Exception(error_message)
         except Exception as e:
+            # Handle other errors
             error_message = f"Unexpected error: {str(e)}"
             logger.error(error_message)
+            
+            # If mock API is allowed as fallback, use it
+            if os.getenv("FALLBACK_TO_MOCK_ON_ERROR", "").lower() == "true":
+                logger.warning("Error occurred, falling back to mock API")
+                return self._generate_mock_response(run_history)
+            
             raise Exception(error_message)
     
     def count_tokens(self, text: str) -> int:
@@ -508,7 +548,13 @@ class AnthropicClient:
                         messages=[message_content],
                         model=self.model
                     )
-                    token_count = token_count.usage.input_tokens if hasattr(token_count, 'usage') else token_count
+                    # Handle different response types
+                    if hasattr(token_count, 'usage') and hasattr(token_count.usage, 'input_tokens'):
+                        token_count = token_count.usage.input_tokens
+                    elif hasattr(token_count, 'input_tokens'):
+                        token_count = token_count.input_tokens
+                    # Ensure we have an integer
+                    token_count = int(token_count) if hasattr(token_count, '__int__') else token_count
                 elif hasattr(self.client.beta, 'messages') and hasattr(self.client.beta.messages, 'count_tokens'):
                     # Try beta API with proper message format
                     message_content = {"role": "user", "content": text}
@@ -516,7 +562,13 @@ class AnthropicClient:
                         messages=[message_content],
                         model=self.model
                     )
-                    token_count = token_count.usage.input_tokens if hasattr(token_count, 'usage') else token_count
+                    # Handle different response types
+                    if hasattr(token_count, 'usage') and hasattr(token_count.usage, 'input_tokens'):
+                        token_count = token_count.usage.input_tokens
+                    elif hasattr(token_count, 'input_tokens'):
+                        token_count = token_count.input_tokens
+                    # Ensure we have an integer
+                    token_count = int(token_count) if hasattr(token_count, '__int__') else token_count
                 elif hasattr(self.client, 'count_tokens'):
                     # Legacy method
                     token_count = self.client.count_tokens(text)

@@ -12,10 +12,11 @@ from .anthropic import AnthropicClient
 from .config import Config
 from .logger import initialize_logging, get_logger
 from .exceptions import ComputerAgentError
+from .computer import ComputerControl
+from .prompt_manager import PromptManager
+import logging
 
-# Initialize logging
-initialize_logging()
-logger = get_logger("main")
+logger = logging.getLogger(__name__)
 
 def parse_arguments():
     """Parse command line arguments."""
@@ -36,6 +37,8 @@ def parse_arguments():
 def main():
     """Main entry point for the application."""
     try:
+        # Initialize logging first
+        initialize_logging()
         logger.info(f"Starting Computer Agent v{__version__}")
         
         # Parse command line arguments
@@ -47,10 +50,6 @@ def main():
             # This must be done before QApplication is created
             import os
             os.environ["QT_QPA_PLATFORM"] = "xcb"
-        
-        # Create application
-        app = QApplication(sys.argv)
-        app.setQuitOnLastWindowClosed(False)  # Prevent app from quitting when window is closed
         
         # Initialize configuration
         config = Config()
@@ -69,31 +68,57 @@ def main():
             logger.info(f"Setting scale factor to {args.scale_factor}")
             config.set("wayland", "force_scale_factor", args.scale_factor)
         
-        # Initialize components
+        # Initialize ComputerControl first to get screen information
+        computer_control = ComputerControl(config)
+        
+        # Initialize prompt manager with display information
+        prompt_manager = PromptManager()
+        
+        # Create display information dictionary
+        display_info = {
+            "screen_width": computer_control.screen_width,
+            "screen_height": computer_control.screen_height,
+            "is_wayland": computer_control.is_wayland,
+            "screen_count": len(computer_control.screens),
+            "screens_info": "\n".join([f"- Screen {i+1}: {s['width']}x{s['height']} at position ({s['x']},{s['y']})" 
+                                     for i, s in enumerate(computer_control.screens)])
+        }
+        
+        # Set display info in prompt manager
+        prompt_manager.set_display_info(display_info)
+        
+        # Initialize Anthropic client with the prompt manager
         try:
-            store = Store(config)
-            logger.info("Store initialized")
-            
-            anthropic_client = AnthropicClient(config)
+            anthropic_client = AnthropicClient(config=config, prompt_manager=prompt_manager)
             logger.info("Anthropic client initialized")
-            
-            # Create and show window
-            window = MainWindow(store, anthropic_client, config)
-            window.show()
-            logger.info("Main window displayed")
-            
-            # Run application
-            return_code = app.exec()
+        except ValueError as e:
+            logger.error(f"Failed to initialize Anthropic client: {str(e)}")
+            sys.exit(1)
+        
+        # Initialize store
+        store = Store(config=config, computer_control=computer_control, anthropic_client=anthropic_client)
+        logger.info("Store initialized")
+        
+        # Create and show the main window
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)  # Don't quit when main window is closed
+        window = MainWindow(store, anthropic_client, config)
+        window.show()
+        logger.info("Main window displayed")
+        
+        try:
+            return_code = app.exec_()
             logger.info(f"Application exited with code {return_code}")
             return return_code
-            
-        except ComputerAgentError as e:
-            logger.error(f"Initialization error: {e}")
-            # Show error dialog here if needed
+        except Exception as e:
+            logger.error(f"Application error: {str(e)}")
             return 1
             
+    except ComputerAgentError as e:
+        logger.error(f"Initialization error: {e}")
+        return 1
     except Exception as e:
-        logger.exception(f"Unhandled exception: {e}")
+        logger.error(f"Unexpected error: {e}")
         return 1
 
 if __name__ == "__main__":
