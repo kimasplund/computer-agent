@@ -19,9 +19,34 @@ class AnthropicClient:
         
         # Use config if provided, otherwise use environment variables
         self.config = config or API_CONFIG
-        self.api_key = self.config.get("anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY")
-        self.model = self.config.get("anthropic_model") or "claude-3-5-sonnet-20241022"
-        self.max_tokens = self.config.get("anthropic_max_tokens") or 1024
+        
+        # Get API configuration values
+        if config and hasattr(config, 'get'):
+            # Using Config class which requires section and key
+            self.api_key = config.get("api", "anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY")
+            self.model = config.get("api", "anthropic_model") or "claude-3-5-sonnet-20241022"
+            self.max_tokens = config.get("api", "anthropic_max_tokens") or 1024
+            
+            # Cache and optimization configuration
+            self.cache_ttl = config.get('api', 'cache_ttl', 3600)
+            self.enable_caching = config.get('api', 'enable_caching', True)
+            self.truncate_history = config.get('api', 'truncate_history', True)
+            self.history_truncation_threshold = config.get('api', 'history_truncation_threshold', 10)
+            self.rate_limit_window = config.get('api', 'rate_limit_window', 60.0)
+            self.max_calls_per_minute = config.get('api', 'max_calls_per_minute', 20)
+        else:
+            # Using API_CONFIG dictionary
+            self.api_key = API_CONFIG.get("anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY")
+            self.model = API_CONFIG.get("anthropic_model") or "claude-3-5-sonnet-20241022"
+            self.max_tokens = API_CONFIG.get("anthropic_max_tokens") or 1024
+            
+            # Get settings from API_CONFIG with defaults
+            self.cache_ttl = API_CONFIG.get('cache_ttl', 3600)  # Cache lifetime in seconds (1 hour)
+            self.enable_caching = API_CONFIG.get('enable_caching', True)  # Whether to use the cache
+            self.truncate_history = API_CONFIG.get('truncate_history', True)  # Whether to truncate long conversation history
+            self.history_truncation_threshold = API_CONFIG.get('history_truncation_threshold', 10)  # Message count threshold
+            self.rate_limit_window = API_CONFIG.get('rate_limit_window', 60.0)  # Window in seconds for rate limiting
+            self.max_calls_per_minute = API_CONFIG.get('max_calls_per_minute', 20)  # Maximum calls per minute
         
         # Initialize token caches
         self.token_count_cache: Dict[str, Tuple[int, float]] = {}  # Maps text hash to (token_count, timestamp)
@@ -30,26 +55,7 @@ class AnthropicClient:
         
         # Rate limiting configuration
         self.api_calls: List[float] = []  # Timestamps of recent API calls
-        self.rate_limit_window = 60.0  # Window in seconds for rate limiting (1 minute)
-        self.max_calls_per_minute = 20  # Maximum calls per minute
         
-        # Cache and optimization configuration
-        if config and hasattr(config, 'get'):
-            self.cache_ttl = config.get('api', 'cache_ttl', 3600)
-            self.enable_caching = config.get('api', 'enable_caching', True)
-            self.truncate_history = config.get('api', 'truncate_history', True)
-            self.history_truncation_threshold = config.get('api', 'history_truncation_threshold', 10)
-            self.rate_limit_window = config.get('api', 'rate_limit_window', 60.0)
-            self.max_calls_per_minute = config.get('api', 'max_calls_per_minute', 20)
-        else:
-            # Get settings from API_CONFIG with defaults
-            self.cache_ttl = API_CONFIG.get('cache_ttl', 3600)  # Cache lifetime in seconds (1 hour)
-            self.enable_caching = API_CONFIG.get('enable_caching', True)  # Whether to use the cache
-            self.truncate_history = API_CONFIG.get('truncate_history', True)  # Whether to truncate long conversation history
-            self.history_truncation_threshold = API_CONFIG.get('history_truncation_threshold', 10)  # Message count threshold
-            self.rate_limit_window = API_CONFIG.get('rate_limit_window', 60.0)  # Window in seconds for rate limiting
-            self.max_calls_per_minute = API_CONFIG.get('max_calls_per_minute', 20)  # Maximum calls per minute
-            
         logger.info(f"Token caching {'enabled' if self.enable_caching else 'disabled'} (TTL: {self.cache_ttl}s)")
         logger.info(f"Rate limiting: {self.max_calls_per_minute} calls per {self.rate_limit_window}s")
         

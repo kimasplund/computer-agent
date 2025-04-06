@@ -8,6 +8,8 @@ from .voice_control import VoiceController
 from .prompt_manager import PromptManager
 import logging
 import qtawesome as qta
+import os
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -109,56 +111,91 @@ class SystemPromptDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, store, anthropic_client, config=None):
         super().__init__()
-        self.store = store
-        self.anthropic_client = anthropic_client
-        self.config = config
-        self.prompt_manager = PromptManager()
-        
-        # Initialize theme settings
-        self.settings = QSettings('Grunty', 'Preferences')
-        self.dark_mode = self.settings.value('dark_mode', True, type=bool)
-        
-        # Initialize voice control
-        self.voice_controller = VoiceController()
-        self.voice_controller.voice_input_signal.connect(self.handle_voice_input)
-        self.voice_controller.status_signal.connect(self.update_status)
-        
-        # Status bar for voice feedback
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Voice control ready")
-        
-        # Initialize screens tracking
-        self.screens_list = QGuiApplication.screens()
-        self.current_screen = None
-        
-        # Connect to application screen signals for Wayland
-        app = QGuiApplication.instance()
-        if hasattr(app, 'screenAdded'):
-            app.screenAdded.connect(self.on_screen_added)
-        if hasattr(app, 'screenRemoved'):
-            app.screenRemoved.connect(self.on_screen_removed)
-        
-        # Check if API key is missing
-        if self.store.error and "ANTHROPIC_API_KEY not found" in self.store.error:
-            self.show_api_key_dialog()
-        
-        self.setWindowTitle("Grunty 👨💻")
-        
-        # Set size and position - use default values first
-        self.setGeometry(100, 100, 400, 600)
-        self.setMinimumSize(400, 500)  # Increased minimum size for better usability
-        
-        # Set rounded corners and border
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        
-        self.setup_ui()
-        self.setup_tray()
-        self.setup_shortcuts()
-        
-        # Position window properly on current screen
-        self.position_window_on_screen()
+        try:
+            logger.info("Initializing MainWindow")
+            self.store = store
+            self.anthropic_client = anthropic_client
+            self.config = config
+            self.prompt_manager = PromptManager()
+            
+            # Initialize theme settings
+            self.settings = QSettings('Grunty', 'Preferences')
+            self.dark_mode = self.settings.value('dark_mode', True, type=bool)
+            
+            # Initialize voice control
+            self.voice_controller = VoiceController()
+            self.voice_controller.voice_input_signal.connect(self.handle_voice_input)
+            self.voice_controller.status_signal.connect(self.update_status)
+            
+            # Status bar for voice feedback
+            self.status_bar = QStatusBar()
+            self.setStatusBar(self.status_bar)
+            self.status_bar.showMessage("Voice control ready")
+            
+            # Initialize screens tracking with proper error handling
+            try:
+                logger.info("Initializing screens tracking")
+                self.screens_list = QGuiApplication.screens()
+                self.current_screen = None
+                
+                # Log available screens for debugging
+                logger.info(f"Found {len(self.screens_list)} screens")
+                for i, screen in enumerate(self.screens_list):
+                    logger.info(f"Screen {i}: {screen.name()}")
+                
+                # Connect to application screen signals for Wayland - with error handling
+                try:
+                    app = QGuiApplication.instance()
+                    logger.info(f"QGuiApplication instance: {app}")
+                    
+                    if hasattr(app, 'screenAdded'):
+                        logger.info("Connecting screenAdded signal")
+                        app.screenAdded.connect(self.on_screen_added)
+                    else:
+                        logger.warning("screenAdded signal not available in this Qt version")
+                        
+                    if hasattr(app, 'screenRemoved'):
+                        logger.info("Connecting screenRemoved signal")
+                        app.screenRemoved.connect(self.on_screen_removed)
+                    else:
+                        logger.warning("screenRemoved signal not available in this Qt version")
+                except Exception as e:
+                    logger.error(f"Error setting up screen signals: {e}")
+            except Exception as e:
+                logger.error(f"Error initializing screens: {e}")
+                self.screens_list = []
+                self.current_screen = None
+            
+            # Check if API key is missing
+            if self.store.error and "ANTHROPIC_API_KEY not found" in self.store.error:
+                self.show_api_key_dialog()
+            
+            self.setWindowTitle("Grunty 👨💻")
+            
+            # Set size and position - use default values first
+            self.setGeometry(100, 100, 400, 600)
+            self.setMinimumSize(400, 500)  # Increased minimum size for better usability
+            
+            # Set rounded corners and border
+            self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            
+            self.setup_ui()
+            self.setup_tray()
+            self.setup_shortcuts()
+            
+            # Position window properly on current screen - with error handling
+            try:
+                logger.info("Positioning window on screen")
+                self.position_window_on_screen()
+            except Exception as e:
+                logger.error(f"Error positioning window: {e}")
+                # Use fallback positioning method if the main one fails
+                self.fallback_window_positioning()
+        except Exception as e:
+            logger.error(f"Error in MainWindow initialization: {e}")
+            # Ensure basic initialization still happens even if there's an error
+            self.setup_ui()
         
     def show_api_key_dialog(self):
         dialog = QDialog(self)
@@ -931,7 +968,122 @@ class MainWindow(QMainWindow):
         QTextEdit.keyPressEvent(self.input_area, event)
         
     def mousePressEvent(self, event):
+        """Handle mouse press events."""
         self.oldPos = event.globalPosition().toPoint()
+        
+        # Add debugging option - Alt+Right-click shows debug dialog
+        if event.button() == Qt.MouseButton.RightButton and (event.modifiers() & Qt.KeyboardModifier.AltModifier):
+            self.show_debug_dialog()
+
+    def show_debug_dialog(self):
+        """Show a debug dialog with system information."""
+        try:
+            # Create debug dialog
+            dialog = QDialog(self)
+            dialog.setWindowTitle("System Debug Information")
+            dialog.resize(800, 600)
+            
+            layout = QVBoxLayout()
+            
+            # Create text area for debug info
+            debug_text = QTextEdit()
+            debug_text.setReadOnly(True)
+            layout.addWidget(debug_text)
+            
+            # Add close button
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(dialog.accept)
+            layout.addWidget(close_btn)
+            
+            dialog.setLayout(layout)
+            
+            # Gather debug information
+            debug_info = self.gather_debug_info()
+            debug_text.setPlainText(debug_info)
+            
+            # Show the dialog
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Error showing debug dialog: {e}")
+    
+    def gather_debug_info(self):
+        """Gather debug information about the system and application."""
+        try:
+            info = []
+            
+            # Add basic system info
+            info.append("=== SYSTEM INFORMATION ===")
+            info.append(f"Python version: {sys.version}")
+            info.append(f"Qt version: {Qt.qVersion()}")
+            info.append(f"Platform: {sys.platform}")
+            info.append(f"Qt platform: {QGuiApplication.platformName()}")
+            
+            # Add environment variables
+            info.append("\n=== ENVIRONMENT VARIABLES ===")
+            wayland_vars = ["XDG_SESSION_TYPE", "WAYLAND_DISPLAY", "QT_QPA_PLATFORM", 
+                           "QT_WAYLAND_DISABLE_WINDOWDECORATION", "QT_SCALE_FACTOR", 
+                           "QT_WAYLAND_FORCE_DPI"]
+            
+            for var in wayland_vars:
+                info.append(f"{var}: {os.environ.get(var, 'Not set')}")
+            
+            # Add screen information
+            info.append("\n=== SCREEN INFORMATION ===")
+            screens = QGuiApplication.screens()
+            primary = QGuiApplication.primaryScreen()
+            
+            info.append(f"Number of screens: {len(screens)}")
+            info.append(f"Primary screen: {primary.name() if primary else 'None'}")
+            
+            for i, screen in enumerate(screens):
+                info.append(f"\nScreen {i+1}: {screen.name()}")
+                info.append(f"  - Size: {screen.size().width()}x{screen.size().height()}")
+                info.append(f"  - Geometry: {screen.geometry().x()},{screen.geometry().y()} " +
+                           f"{screen.geometry().width()}x{screen.geometry().height()}")
+                info.append(f"  - Available: {screen.availableGeometry().x()},{screen.availableGeometry().y()} " +
+                           f"{screen.availableGeometry().width()}x{screen.availableGeometry().height()}")
+                info.append(f"  - DPI: {screen.logicalDotsPerInch()}")
+                info.append(f"  - Device Pixel Ratio: {screen.devicePixelRatio()}")
+                info.append(f"  - Depth: {screen.depth()} bits")
+                info.append(f"  - Is Primary: {screen == primary}")
+            
+            # Add window information
+            info.append("\n=== WINDOW INFORMATION ===")
+            info.append(f"Current screen: {self.current_screen.name() if self.current_screen else 'None'}")
+            geo = self.geometry()
+            info.append(f"Window geometry: {geo.x()},{geo.y()} {geo.width()}x{geo.height()}")
+            info.append(f"Window flags: {int(self.windowFlags())}")
+            info.append(f"Dark mode: {self.dark_mode}")
+            
+            # Add config information if available
+            info.append("\n=== CONFIG INFORMATION ===")
+            if self.config:
+                if hasattr(self.config, "is_wayland_enabled"):
+                    try:
+                        info.append(f"Wayland enabled (config): {self.config.is_wayland_enabled()}")
+                    except Exception as e:
+                        info.append(f"Error checking Wayland config: {e}")
+                
+                # Add wayland config if available
+                try:
+                    wayland_config = self.config.get_section("wayland")
+                    info.append("Wayland config:")
+                    for k, v in wayland_config.items():
+                        info.append(f"  - {k}: {v}")
+                except Exception as e:
+                    info.append(f"Error getting Wayland config: {e}")
+            else:
+                info.append("Config not available")
+            
+            # Add error log information
+            info.append("\n=== RECENT ERROR LOGS ===")
+            # This would require a custom handler to capture recent logs
+            # For now, just add a note
+            info.append("See application logs for details")
+            
+            return "\n".join(info)
+        except Exception as e:
+            return f"Error gathering debug information: {e}"
 
     def mouseMoveEvent(self, event):
         delta = QPoint(event.globalPosition().toPoint() - self.oldPos)
@@ -943,17 +1095,25 @@ class MainWindow(QMainWindow):
 
     def check_screen_change(self):
         """Check if the window has moved to a different screen and adjust if needed."""
-        window_center = self.geometry().center()
-        screens = QGuiApplication.screens()
-        
-        for screen in screens:
-            if screen.geometry().contains(window_center):
-                if screen != self.current_screen:
-                    # Window moved to a different screen
-                    self.current_screen = screen
-                    # Apply any screen-specific adjustments if needed
-                    self.apply_screen_specific_settings(screen)
-                break
+        try:
+            window_center = self.geometry().center()
+            screens = QGuiApplication.screens()
+            
+            if not self.current_screen:
+                logger.warning("check_screen_change: current_screen is None")
+                return
+                
+            for screen in screens:
+                if screen.geometry().contains(window_center):
+                    if screen != self.current_screen:
+                        # Window moved to a different screen
+                        logger.info(f"Window moved from screen {self.current_screen.name()} to {screen.name()}")
+                        self.current_screen = screen
+                        # Apply any screen-specific adjustments if needed
+                        self.apply_screen_specific_settings(screen)
+                    break
+        except Exception as e:
+            logger.error(f"Error in check_screen_change: {e}")
     
     def apply_screen_specific_settings(self, screen):
         """Apply any screen-specific settings when moving between screens."""
@@ -999,64 +1159,112 @@ class MainWindow(QMainWindow):
 
     def position_window_on_screen(self):
         """Position the window on the current screen, with Wayland multiscreen support."""
-        # Get the screen where the cursor is
-        cursor_pos = QCursor().pos()
-        screens = QGuiApplication.screens()
-        
-        # Default to primary screen
-        target_screen = QGuiApplication.primaryScreen()
-        
-        # Find the screen containing the cursor
-        for screen in screens:
-            if screen.geometry().contains(cursor_pos):
-                target_screen = screen
-                break
-        
-        # Get available geometry (accounts for taskbars/panels)
-        available_geometry = target_screen.availableGeometry()
-        
-        # Position window in the center of the available area
-        window_width = self.width()
-        window_height = self.height()
-        
-        x = available_geometry.x() + (available_geometry.width() - window_width) // 2
-        y = available_geometry.y() + (available_geometry.height() - window_height) // 2
-        
-        self.setGeometry(x, y, window_width, window_height)
-        
-        # Save the current screen for future reference
-        self.current_screen = target_screen
-        
-        # Check for Wayland environment and apply specific adjustments
-        self.detect_wayland_environment()
-        
+        try:
+            logger.info("Start position_window_on_screen")
+            # Get the screen where the cursor is
+            cursor_pos = QCursor().pos()
+            logger.info(f"Cursor position: {cursor_pos.x()}, {cursor_pos.y()}")
+            
+            screens = QGuiApplication.screens()
+            logger.info(f"Number of screens: {len(screens)}")
+            
+            # Default to primary screen
+            target_screen = QGuiApplication.primaryScreen()
+            if target_screen:
+                logger.info(f"Primary screen: {target_screen.name()}")
+            else:
+                logger.warning("No primary screen found")
+                return
+            
+            # Find the screen containing the cursor
+            screen_found = False
+            for i, screen in enumerate(screens):
+                screen_geo = screen.geometry()
+                logger.info(f"Screen {i} geometry: {screen_geo.x()}, {screen_geo.y()}, {screen_geo.width()}x{screen_geo.height()}")
+                
+                if screen_geo.contains(cursor_pos):
+                    target_screen = screen
+                    screen_found = True
+                    logger.info(f"Found cursor on screen {i}: {screen.name()}")
+                    break
+            
+            if not screen_found:
+                logger.warning(f"Cursor not found on any screen, using primary")
+            
+            # Get available geometry (accounts for taskbars/panels)
+            available_geometry = target_screen.availableGeometry()
+            logger.info(f"Available geometry: {available_geometry.x()}, {available_geometry.y()}, {available_geometry.width()}x{available_geometry.height()}")
+            
+            # Position window in the center of the available area
+            window_width = self.width()
+            window_height = self.height()
+            logger.info(f"Window size: {window_width}x{window_height}")
+            
+            x = available_geometry.x() + (available_geometry.width() - window_width) // 2
+            y = available_geometry.y() + (available_geometry.height() - window_height) // 2
+            logger.info(f"Setting window position to: {x}, {y}")
+            
+            self.setGeometry(x, y, window_width, window_height)
+            
+            # Save the current screen for future reference
+            self.current_screen = target_screen
+            logger.info(f"Current screen set to: {self.current_screen.name() if self.current_screen else 'None'}")
+            
+            # Check for Wayland environment and apply specific adjustments
+            try:
+                self.detect_wayland_environment()
+            except Exception as e:
+                logger.error(f"Error in detect_wayland_environment: {e}")
+        except Exception as e:
+            logger.error(f"Error in position_window_on_screen: {e}")
+
     def detect_wayland_environment(self):
         """Detect if running on Wayland and apply specific adjustments."""
-        # Check if running on Wayland using platform name and configuration
-        platform_name = QGuiApplication.platformName()
-        is_wayland_platform = platform_name.lower() == "wayland"
-        
-        # Use config class to check if Wayland is enabled/detected
-        is_wayland_enabled = False
-        if self.config and hasattr(self.config, 'is_wayland_enabled'):
-            is_wayland_enabled = self.config.is_wayland_enabled()
-        
-        is_wayland = is_wayland_platform or is_wayland_enabled
-        
-        if is_wayland:
-            logger.info(f"Wayland environment detected: Platform={platform_name}")
-            # Apply Wayland-specific settings
-            self.apply_wayland_settings()
+        try:
+            logger.info("Detecting Wayland environment")
+            # Check if running on Wayland using platform name and configuration
+            platform_name = QGuiApplication.platformName()
+            logger.info(f"Platform name: {platform_name}")
             
-            # Connect to screen added/removed signals if available
-            for screen in QGuiApplication.screens():
-                self.monitor_screen_changes(screen)
+            is_wayland_platform = platform_name.lower() == "wayland"
+            logger.info(f"Is Wayland platform by name: {is_wayland_platform}")
+            
+            # Use config class to check if Wayland is enabled/detected
+            is_wayland_enabled = False
+            if self.config and hasattr(self.config, 'is_wayland_enabled'):
+                try:
+                    is_wayland_enabled = self.config.is_wayland_enabled()
+                    logger.info(f"Wayland enabled by config: {is_wayland_enabled}")
+                except Exception as e:
+                    logger.error(f"Error checking is_wayland_enabled: {e}")
+            
+            # Also check environment variables directly for debugging
+            xdg_session = os.environ.get("XDG_SESSION_TYPE", "")
+            wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
+            logger.info(f"Environment variables: XDG_SESSION_TYPE={xdg_session}, WAYLAND_DISPLAY={wayland_display}")
+            
+            is_wayland = is_wayland_platform or is_wayland_enabled
+            logger.info(f"Final Wayland detection result: {is_wayland}")
+            
+            if is_wayland:
+                logger.info(f"Wayland environment detected: Platform={platform_name}")
+                # Apply Wayland-specific settings
+                self.apply_wayland_settings()
                 
-            # Debug screen information if enabled
-            if self.config and self.config.get("wayland", "debug_screen_info", False):
-                self.log_screen_info()
-        else:
-            logger.info(f"Non-Wayland environment detected: {platform_name}")
+                # Connect to screen added/removed signals if available
+                for screen in QGuiApplication.screens():
+                    try:
+                        self.monitor_screen_changes(screen)
+                    except Exception as e:
+                        logger.error(f"Error monitoring screen {screen.name()}: {e}")
+                    
+                # Debug screen information if enabled
+                if self.config and self.config.get("wayland", "debug_screen_info", False):
+                    self.log_screen_info()
+            else:
+                logger.info(f"Non-Wayland environment detected: {platform_name}")
+        except Exception as e:
+            logger.error(f"Error in detect_wayland_environment: {e}")
     
     def log_screen_info(self):
         """Log detailed information about all available screens."""
@@ -1087,22 +1295,43 @@ class MainWindow(QMainWindow):
                     self.settings.setValue("QT_WAYLAND_DISABLE_WINDOWDECORATION", "1")
                 
                 # Apply scale factor if configured
-                scale_factor = self.config.get_wayland_scale_factor() if hasattr(self.config, 'get_wayland_scale_factor') else 0
+                scale_factor = 0
+                try:
+                    if hasattr(self.config, 'get_wayland_scale_factor'):
+                        scale_factor = self.config.get_wayland_scale_factor()
+                    else:
+                        scale_factor = self.config.get("wayland", "force_scale_factor", 0)
+                except Exception as e:
+                    logger.error(f"Error getting scale factor: {e}")
+                    scale_factor = 0
+                    
                 if scale_factor > 0 and scale_factor != 1.0:
                     logger.info(f"Applying Wayland scale factor: {scale_factor}")
                     # Note: This is only for reference, as scaling must be done via env vars before app starts
                 
                 # Set window flags for Wayland
-                if self.config.get("wayland", "stay_on_top", False):
-                    self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                try:
+                    if self.config.get("wayland", "stay_on_top", False):
+                        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                except Exception as e:
+                    logger.error(f"Error setting window flags: {e}")
                 
                 # Handle maximize to active screen preference
-                if self.config.get("wayland", "maximize_to_active_screen", True):
-                    logger.info("Window will maximize to active screen")
+                try:
+                    maximize_to_active = self.config.get("wayland", "maximize_to_active_screen", True)
+                    if maximize_to_active:
+                        logger.info("Window will maximize to active screen")
+                except Exception as e:
+                    logger.error(f"Error checking maximize_to_active_screen: {e}")
             
-            # Adjust for high DPI screens
-            if self.current_screen and self.current_screen.logicalDotsPerInch() > 120:
-                self.adjustForHighDPI()
+            # Adjust for high DPI screens - with proper error handling
+            if self.current_screen:
+                try:
+                    dpi = self.current_screen.logicalDotsPerInch()
+                    if dpi > 120:
+                        self.adjustForHighDPI()
+                except Exception as e:
+                    logger.error(f"Error checking screen DPI: {e}")
                 
             # Log Wayland configuration
             logger.info("Applied Wayland-specific settings")
@@ -1158,52 +1387,78 @@ class MainWindow(QMainWindow):
     
     def adjustForHighDPI(self):
         """Adjust UI elements for high DPI screens."""
-        # Get current screen DPI
-        dpi = self.current_screen.logicalDotsPerInch()
-        scale_factor = dpi / 96.0  # Standard DPI is typically 96
-        
-        # Only adjust if scale factor is significant
-        if scale_factor > 1.2:
-            logger.info(f"Adjusting for high DPI screen: {dpi} DPI, scale factor: {scale_factor:.2f}")
+        try:
+            # Get current screen DPI
+            if not self.current_screen:
+                logger.warning("adjustForHighDPI: current_screen is None")
+                return
+                
+            dpi = self.current_screen.logicalDotsPerInch()
+            scale_factor = dpi / 96.0  # Standard DPI is typically 96
             
-            # Adjust font sizes
-            base_font_size = int(self.config.get("ui", "font_size", 14))
-            adjusted_size = max(base_font_size, int(base_font_size * scale_factor))
-            
-            # Update fonts
-            font = QFont(self.config.get("ui", "font_family", "Inter"), adjusted_size)
-            self.setFont(font)
-            
-            # You could also adjust icon sizes, layout spacing, etc.
-            # self.container.setStyleSheet(f"QWidget#container {{ padding: {int(12 * scale_factor)}px; }}")
+            # Only adjust if scale factor is significant
+            if scale_factor > 1.2:
+                logger.info(f"Adjusting for high DPI screen: {dpi} DPI, scale factor: {scale_factor:.2f}")
+                
+                # Adjust font sizes
+                base_font_size = 14  # Default
+                if self.config:
+                    try:
+                        base_font_size = int(self.config.get("ui", "font_size", 14))
+                    except Exception as e:
+                        logger.error(f"Error getting font size from config: {e}")
+                
+                adjusted_size = max(base_font_size, int(base_font_size * scale_factor))
+                
+                # Update fonts
+                font_family = "Inter"  # Default
+                if self.config:
+                    try:
+                        font_family = self.config.get("ui", "font_family", "Inter")
+                    except Exception as e:
+                        logger.error(f"Error getting font family from config: {e}")
+                        
+                font = QFont(font_family, adjusted_size)
+                self.setFont(font)
+                logger.info(f"Adjusted font to {font_family} {adjusted_size}pt")
+        except Exception as e:
+            logger.error(f"Error in adjustForHighDPI: {e}")
 
     def on_screen_added(self, screen):
         """Handle a new screen being added to the system."""
-        logger.info(f"New screen added: {screen.name()}")
-        
-        # Update our list of screens
-        self.screens_list = QGuiApplication.screens()
-        
-        # Set up monitoring for this screen
-        self.monitor_screen_changes(screen)
-        
-        # If this is the first screen or we're on a virtual desktop,
-        # we might want to reposition the window
-        if len(self.screens_list) == 1 or not self.current_screen:
-            self.position_window_on_screen()
+        try:
+            logger.info(f"New screen added: {screen.name()}")
+            
+            # Update our list of screens
+            self.screens_list = QGuiApplication.screens()
+            
+            # Set up monitoring for this screen
+            self.monitor_screen_changes(screen)
+            
+            # If this is the first screen or we're on a virtual desktop,
+            # we might want to reposition the window
+            if len(self.screens_list) == 1 or not self.current_screen:
+                self.position_window_on_screen()
+        except Exception as e:
+            logger.error(f"Error in on_screen_added: {e}")
     
     def on_screen_removed(self, screen):
         """Handle a screen being removed from the system."""
-        logger.info(f"Screen removed: {screen.name()}")
-        
-        # Update our list of screens
-        self.screens_list = QGuiApplication.screens()
-        
-        # If our current screen was removed, reposition to a new screen
-        if self.current_screen == screen:
-            logger.info("Current screen was removed, repositioning window")
-            self.current_screen = None
-            self.position_window_on_screen()
+        try:
+            logger.info(f"Screen removed: {screen.name()}")
+            
+            # Update our list of screens
+            self.screens_list = QGuiApplication.screens()
+            
+            # If our current screen was removed, reposition to a new screen
+            if self.current_screen == screen:
+                logger.info("Current screen was removed, repositioning window")
+                self.current_screen = None
+                # Don't try to reposition if there are no screens
+                if self.screens_list:
+                    self.position_window_on_screen()
+        except Exception as e:
+            logger.error(f"Error in on_screen_removed: {e}")
             
     def showEvent(self, event):
         """Handle window show event."""
@@ -1230,3 +1485,35 @@ class MainWindow(QMainWindow):
                 new_width = min(window_geom.width(), screen_geom.width())
                 new_height = min(window_geom.height(), screen_geom.height())
                 self.resize(new_width, new_height)
+
+    def fallback_window_positioning(self):
+        """Fallback method for window positioning when the standard method fails."""
+        try:
+            logger.info("Using fallback window positioning")
+            
+            # Get application instance and primary screen
+            app = QGuiApplication.instance()
+            primary_screen = QGuiApplication.primaryScreen()
+            
+            if primary_screen:
+                # Simply center on primary screen's available area
+                screen_rect = primary_screen.availableGeometry()
+                window_width = 400  # Default width
+                window_height = 600  # Default height
+                
+                x = screen_rect.x() + (screen_rect.width() - window_width) // 2
+                y = screen_rect.y() + (screen_rect.height() - window_height) // 2
+                
+                logger.info(f"Fallback positioning to: {x},{y} {window_width}x{window_height}")
+                self.setGeometry(x, y, window_width, window_height)
+                
+                # Set current screen to primary
+                self.current_screen = primary_screen
+            else:
+                # If no primary screen is available, use a fixed position
+                logger.warning("No primary screen found, using fixed position")
+                self.setGeometry(100, 100, 400, 600)
+        except Exception as e:
+            logger.error(f"Error in fallback window positioning: {e}")
+            # As a last resort, use a hardcoded position
+            self.setGeometry(100, 100, 400, 600)

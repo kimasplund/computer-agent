@@ -82,4 +82,53 @@ Issues and PRs are most welcome! Made this is in a day so don't really have a ro
 
 [Apache License 2.0](LICENSE)
 
+## Wayland Multi-Screen Support
+
+This application now includes improved support for Wayland environments with multiple displays. The following features are available:
+
+### Wayland-Specific Features
+
+- Automatic detection of Wayland environment
+- Proper window positioning across multiple screens
+- Handling of screen addition/removal events
+- High DPI screen support with automatic scaling
+- Screen-specific configuration options
+
+### Troubleshooting Wayland Issues
+
+If you encounter issues with the application on Wayland, try the following:
+
+1. **Debug Mode**: Press `Alt+Right-click` anywhere on the application window to open the debug dialog, which displays detailed information about screens, environment variables and settings.
+
+2. **Command Line Options**:
+   - `--no-wayland`: Disable Wayland-specific features
+   - `--force-x11`: Force using X11 platform plugin instead of Wayland
+   - `--debug-screens`: Enable detailed screen debugging logs
+   - `--scale-factor [value]`: Set a custom scale factor (e.g., 1.5)
+
+3. **Environment Variables**:
+   - `WAYLAND_ENABLED=false`: Disable Wayland support
+   - `QT_SCALE_FACTOR=1.5`: Set custom scaling factor
+   - `QT_WAYLAND_DISABLE_WINDOWDECORATION=1`: Remove window decorations
+   - `QT_QPA_PLATFORM=xcb`: Force X11 backend
+
+### Example Usage
+
+```bash
+# Run with Wayland debugging enabled
+python run.py --debug-screens
+
+# Force X11 mode if Wayland causes issues
+python run.py --force-x11
+
+# Set custom scale factor for high DPI displays
+python run.py --scale-factor 1.5
+```
+
+If you continue to experience issues with Wayland, try creating a `.env` file with the following content:
+
+```
+WAYLAND_ENABLED=false
+```
+
 ---
