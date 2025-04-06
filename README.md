@@ -19,6 +19,10 @@ Anthropic can see your screen through screenshots during actions. Hide sensitive
 
 ## 🎯 Features
 - Literally ask AI to do ANYTHING on your computer that you do with a mouse and keyboard. Browse the web, write code, blah blah.
+- **NEW**: Improved error handling and retry logic for API calls
+- **NEW**: Better token management to optimize costs
+- **NEW**: Type hinting for Python 3.13 compatibility
+- **NEW**: Centralized configuration management
 
 # 💻 Platforms
 - Anything you can run Python on: MacOS, Windows, Linux, etc.
@@ -50,6 +54,21 @@ python run.py
 - Claude really loves Firefox. You might want to install it for better UI detection and accurate mouse clicks.
 - Be specific and explicit, help it out a bit
 - Always monitor the agent's actions
+
+## Recent Improvements
+
+### Enhanced Anthropic Client
+- Implemented automatic retries for rate limiting and timeouts
+- Added proper token counting with fallback mechanism
+- Improved error handling with custom exceptions
+- Better configuration management through centralized config
+- Type hinting for better IDE support and code quality
+
+### Improved Store Module
+- Better state management for running tasks
+- Enhanced error handling and recovery
+- Proper typing for all methods and properties
+- More detailed reporting during task execution
 
 ## 🐛 Known Issues
 
