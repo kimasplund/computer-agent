@@ -37,8 +37,10 @@ python -m venv venv
 source venv/bin/activate  # or `venv\Scripts\activate` on Windows
 pip install -r requirements.txt
 
-# Add API key to .env
-echo "ANTHROPIC_API_KEY=your-key-here" > .env
+# Copy the example .env file and configure your settings
+cp .env.example .env
+# Edit .env with your API key
+nano .env  # or use any text editor
 
 # Run
 python run.py
@@ -168,5 +170,3 @@ pip install tiktoken
 ```
 
 This provides a local tokenizer that works with Claude models without requiring API calls.
-
----
